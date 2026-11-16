@@ -8,7 +8,7 @@
       content="MediaPipe를 활용한 한국수어 상반신 관절 실시간 추적 프로그램"
     />
     <title>수어 모션 트래커</title>
-    <link rel="stylesheet" href="./style.css" />
+    <link rel="stylesheet" href="./style.css?v=20261116-1" />
   </head>
   <body>
     <main class="app-shell">
@@ -35,7 +35,7 @@
           </p>
 
           <div class="controls" aria-label="카메라 제어">
-            <button class="button button-primary" id="startButton" type="button" disabled>
+            <button class="button button-primary" id="startButton" type="button">
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <path d="m9 7 8 5-8 5V7Z" />
               </svg>
@@ -47,6 +47,26 @@
               </svg>
               카메라 종료
             </button>
+          </div>
+
+          <div class="camera-device-control">
+            <label for="cameraSelect">사용할 카메라</label>
+            <div class="camera-device-row">
+              <select id="cameraSelect" aria-describedby="cameraListHint">
+                <option value="">기본 카메라</option>
+              </select>
+              <button id="refreshCamerasButton" type="button">목록 새로고침</button>
+            </div>
+            <small id="cameraListHint">권한 허용 후 카메라 이름을 확인할 수 있습니다.</small>
+          </div>
+
+          <div class="camera-debug-control">
+            <label class="debug-toggle" for="videoDebugMode">
+              <input id="videoDebugMode" type="checkbox" />
+              <span>영상 디버그 모드</span>
+            </label>
+            <a href="./camera-test.html" target="_blank" rel="noopener">카메라 단독 테스트 열기</a>
+            <small>디버그 모드는 Canvas·필터·좌우 반전을 끄고 원본 video를 가장 위에 표시합니다.</small>
           </div>
 
           <div class="privacy-note">
@@ -61,11 +81,30 @@
           <div class="tracker-toolbar">
             <div class="status-wrap">
               <span class="status-dot is-loading" id="statusDot"></span>
-              <span id="statusText" role="status" aria-live="polite">AI 모델 준비 중</span>
+              <span id="statusText" role="status" aria-live="polite">카메라 사용 가능 · AI 모델 준비 중</span>
             </div>
             <div class="live-stats" aria-label="추적 현황">
+              <span><strong id="poseCount">0</strong> PERSON</span>
               <span><strong id="handCount">0</strong> HANDS</span>
               <span><strong id="fpsValue">0</strong> FPS</span>
+            </div>
+          </div>
+
+          <div class="runtime-status" aria-label="실시간 실행 상태">
+            <div class="runtime-status-item" id="cameraStatusCard" data-state="idle">
+              <span><i aria-hidden="true"></i>카메라 연결</span>
+              <strong id="cameraStatusValue">대기</strong>
+              <small id="cameraStatusDetail">장치 연결 전</small>
+            </div>
+            <div class="runtime-status-item" id="videoStatusCard" data-state="idle">
+              <span><i aria-hidden="true"></i>영상 재생</span>
+              <strong id="videoStatusValue">대기</strong>
+              <small id="videoStatusDetail">0×0 · readyState 0</small>
+            </div>
+            <div class="runtime-status-item" id="modelStatusCard" data-state="loading">
+              <span><i aria-hidden="true"></i>MediaPipe</span>
+              <strong id="modelStatusValue">준비 중</strong>
+              <small id="modelStatusDetail">라이브러리와 모델 로딩 중</small>
             </div>
           </div>
 
@@ -132,9 +171,9 @@
 
     <footer>
       <span>한국수어 인식 프로젝트</span>
-      <span>MediaPipe · On-device processing</span>
+      <span>MediaPipe · On-device processing · build 20261116-2</span>
     </footer>
 
-    <script type="module" src="./script.js"></script>
+    <script type="module" src="./script.js?v=20261116-2"></script>
   </body>
 </html>

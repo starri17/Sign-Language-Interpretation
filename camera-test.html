@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="MediaPipe 없이 웹캠 스트림만 진단하는 페이지" />
+    <title>카메라 단독 진단</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #080b0c;
+        --surface: #101516;
+        --raised: #171d1e;
+        --line: rgba(255, 255, 255, 0.11);
+        --text: #f3f6f4;
+        --muted: #8d9894;
+        --accent: #b7ff3c;
+        --warning: #ffd465;
+        --danger: #ff7d75;
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        min-width: 320px;
+        min-height: 100vh;
+        margin: 0;
+        color: var(--text);
+        background: radial-gradient(circle at 85% 8%, rgba(183, 255, 60, 0.07), transparent 26rem), var(--bg);
+        font-family: "Noto Sans KR", "Apple SD Gothic Neo", system-ui, sans-serif;
+      }
+
+      button, select { font: inherit; }
+
+      main {
+        width: min(1060px, calc(100% - 32px));
+        margin: 0 auto;
+        padding: 42px 0 64px;
+      }
+
+      header {
+        display: flex;
+        gap: 20px;
+        align-items: flex-end;
+        justify-content: space-between;
+        margin-bottom: 24px;
+      }
+
+      h1 { margin: 0; font-size: clamp(1.7rem, 4vw, 2.8rem); }
+      header p { max-width: 44rem; margin: 9px 0 0; color: var(--muted); line-height: 1.7; }
+      a { color: var(--accent); font-size: 0.82rem; font-weight: 700; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+
+      .panel {
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: var(--surface);
+        box-shadow: 0 26px 70px rgba(0, 0, 0, 0.3);
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: minmax(220px, 1fr) auto auto;
+        gap: 10px;
+        padding: 16px;
+        border-bottom: 1px solid var(--line);
+      }
+
+      select, button {
+        min-height: 44px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+
+      select { min-width: 0; padding: 0 12px; color: var(--text); background: var(--raised); }
+      button { padding: 0 17px; font-weight: 700; cursor: pointer; }
+      button:disabled { cursor: not-allowed; opacity: 0.45; }
+      #startButton { border-color: transparent; color: #11150e; background: var(--accent); }
+      #stopButton { color: var(--text); background: var(--raised); }
+
+      .status-line {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        min-height: 50px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--line);
+        color: #c7cfcc;
+        font-size: 0.82rem;
+      }
+
+      .status-dot { width: 9px; height: 9px; border-radius: 50%; background: #66706d; }
+      .status-line[data-state="loading"] .status-dot { background: var(--warning); }
+      .status-line[data-state="live"] .status-dot { background: var(--accent); box-shadow: 0 0 0 5px rgba(183, 255, 60, 0.09); }
+      .status-line[data-state="warning"] .status-dot { background: var(--warning); }
+      .status-line[data-state="error"] .status-dot { background: var(--danger); }
+
+      .video-wrap {
+        position: relative;
+        aspect-ratio: 16 / 9;
+        background: #000;
+      }
+
+      #cameraVideo {
+        position: absolute;
+        z-index: 1;
+        inset: 0;
+        display: block;
+        visibility: visible;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        opacity: 1;
+        background: #000;
+        filter: none;
+        transform: none;
+      }
+
+      #analysisCanvas { display: none; }
+
+      .message {
+        margin: 14px 16px 0;
+        padding: 12px 14px;
+        border: 1px solid rgba(255, 125, 117, 0.28);
+        border-radius: 10px;
+        color: #ffc1bc;
+        background: rgba(255, 125, 117, 0.08);
+        font-size: 0.78rem;
+        line-height: 1.6;
+      }
+
+      .message.warning { border-color: rgba(255, 212, 101, 0.28); color: #ffe3a0; background: rgba(255, 212, 101, 0.08); }
+      .message[hidden] { display: none; }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 1px;
+        margin-top: 1px;
+        background: var(--line);
+      }
+
+      .metric { min-width: 0; padding: 15px 16px; background: var(--surface); }
+      .metric span { display: block; color: var(--muted); font-size: 0.65rem; }
+      .metric strong { display: block; overflow: hidden; margin-top: 5px; font: 600 0.78rem/1.45 ui-monospace, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+      .metric strong.good { color: var(--accent); }
+      .metric strong.warn { color: var(--warning); }
+      .metric strong.bad { color: var(--danger); }
+
+      .log-wrap { padding: 16px; border-top: 1px solid var(--line); }
+      .log-wrap h2 { margin: 0 0 9px; font-size: 0.8rem; }
+      #eventLog { max-height: 180px; margin: 0; overflow: auto; color: #8f9a96; font: 0.68rem/1.65 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+
+      @media (max-width: 720px) {
+        header { align-items: flex-start; flex-direction: column; }
+        .controls { grid-template-columns: 1fr 1fr; }
+        .controls select { grid-column: 1 / -1; }
+        .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>카메라 단독 진단</h1>
+          <p>관절 추적 라이브러리를 불러오지 않고 브라우저의 카메라 스트림과 원본 video 요소만 검사합니다.</p>
+        </div>
+        <a href="./index.html">수어 추적기로 돌아가기</a>
+      </header>
+
+      <section class="panel" aria-label="카메라 테스트">
+        <div class="controls">
+          <select id="cameraSelect" aria-label="카메라 선택">
+            <option value="">기본 카메라</option>
+          </select>
+          <button id="startButton" type="button">카메라 시작</button>
+          <button id="stopButton" type="button" disabled>카메라 종료</button>
+        </div>
+
+        <div class="status-line" id="statusLine" data-state="idle">
+          <i class="status-dot" aria-hidden="true"></i>
+          <strong id="statusText">카메라 대기 중</strong>
+        </div>
+
+        <div class="video-wrap">
+          <video id="cameraVideo" autoplay playsinline muted></video>
+          <canvas id="analysisCanvas" aria-hidden="true"></canvas>
+        </div>
+
+        <div class="message" id="message" role="alert" hidden></div>
+
+        <div class="metrics" aria-label="카메라 진단 값">
+          <div class="metric"><span>카메라 장치</span><strong id="deviceName">-</strong></div>
+          <div class="metric"><span>MediaStream.active</span><strong id="streamActive">false</strong></div>
+          <div class="metric"><span>srcObject 연결</span><strong id="sourceConnected">false</strong></div>
+          <div class="metric"><span>videoWidth × videoHeight</span><strong id="videoSize">0 × 0</strong></div>
+          <div class="metric"><span>readyState</span><strong id="readyState">0 · HAVE_NOTHING</strong></div>
+          <div class="metric"><span>currentTime</span><strong id="currentTime">0.000 s</strong></div>
+          <div class="metric"><span>video.paused</span><strong id="paused">true</strong></div>
+          <div class="metric"><span>Track.readyState</span><strong id="trackState">-</strong></div>
+          <div class="metric"><span>Track enabled / muted</span><strong id="trackFlags">-</strong></div>
+          <div class="metric"><span>프레임 평균 밝기</span><strong id="brightness">검사 전</strong></div>
+          <div class="metric"><span>밝은 픽셀 비율</span><strong id="litRatio">검사 전</strong></div>
+          <div class="metric"><span>Video CSS</span><strong id="videoCss">-</strong></div>
+        </div>
+
+        <div class="log-wrap">
+          <h2>이벤트 로그</h2>
+          <pre id="eventLog"></pre>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const elements = {
+        video: document.querySelector("#cameraVideo"),
+        canvas: document.querySelector("#analysisCanvas"),
+        cameraSelect: document.querySelector("#cameraSelect"),
+        startButton: document.querySelector("#startButton"),
+        stopButton: document.querySelector("#stopButton"),
+        statusLine: document.querySelector("#statusLine"),
+        statusText: document.querySelector("#statusText"),
+        message: document.querySelector("#message"),
+        eventLog: document.querySelector("#eventLog"),
+        deviceName: document.querySelector("#deviceName"),
+        streamActive: document.querySelector("#streamActive"),
+        sourceConnected: document.querySelector("#sourceConnected"),
+        videoSize: document.querySelector("#videoSize"),
+        readyState: document.querySelector("#readyState"),
+        currentTime: document.querySelector("#currentTime"),
+        paused: document.querySelector("#paused"),
+        trackState: document.querySelector("#trackState"),
+        trackFlags: document.querySelector("#trackFlags"),
+        brightness: document.querySelector("#brightness"),
+        litRatio: document.querySelector("#litRatio"),
+        videoCss: document.querySelector("#videoCss"),
+      };
+
+      const READY_STATE_NAMES = ["HAVE_NOTHING", "HAVE_METADATA", "HAVE_CURRENT_DATA", "HAVE_FUTURE_DATA", "HAVE_ENOUGH_DATA"];
+      let stream = null;
+      let diagnosticsTimer = null;
+      let lastCurrentTime = -1;
+      let unchangedTimeTicks = 0;
+
+      function log(message, detail) {
+        const time = new Date().toLocaleTimeString("ko-KR", { hour12: false });
+        const detailText = detail === undefined ? "" : ` ${JSON.stringify(detail)}`;
+        elements.eventLog.textContent += `[${time}] ${message}${detailText}\n`;
+        elements.eventLog.scrollTop = elements.eventLog.scrollHeight;
+        console.info(`[Camera Test] ${message}`, detail ?? "");
+      }
+
+      function setStatus(message, state = "idle") {
+        elements.statusText.textContent = message;
+        elements.statusLine.dataset.state = state;
+      }
+
+      function showMessage(message, type = "error") {
+        elements.message.textContent = message;
+        elements.message.className = type === "warning" ? "message warning" : "message";
+        elements.message.hidden = false;
+      }
+
+      function hideMessage() {
+        elements.message.hidden = true;
+        elements.message.textContent = "";
+      }
+
+      async function refreshCameraList(preferredDeviceId = elements.cameraSelect.value) {
+        if (!navigator.mediaDevices?.enumerateDevices) return;
+
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const cameras = devices.filter((device) => device.kind === "videoinput");
+          const activeDeviceId = stream?.getVideoTracks()[0]?.getSettings?.().deviceId ?? "";
+          const targetDeviceId = preferredDeviceId || activeDeviceId;
+
+          elements.cameraSelect.replaceChildren(new Option("기본 카메라", ""));
+          cameras.forEach((camera, index) => {
+            elements.cameraSelect.add(new Option(camera.label || `카메라 ${index + 1}`, camera.deviceId));
+          });
+
+          if (targetDeviceId && cameras.some((camera) => camera.deviceId === targetDeviceId)) {
+            elements.cameraSelect.value = targetDeviceId;
+          }
+          log("카메라 목록 조회", cameras.map((camera) => camera.label || "이름 비공개"));
+        } catch (error) {
+          log("카메라 목록 조회 실패", { name: error.name, message: error.message });
+        }
+      }
+
+      function createConstraints() {
+        const deviceId = elements.cameraSelect.value;
+        return {
+          video: deviceId
+            ? { deviceId: { exact: deviceId }, width: { ideal: 960 }, height: { ideal: 540 } }
+            : { width: { ideal: 960 }, height: { ideal: 540 }, facingMode: { ideal: "user" } },
+          audio: false,
+        };
+      }
+
+      async function startCamera() {
+        if (!navigator.mediaDevices?.getUserMedia) {
+          handleError(Object.assign(new Error("카메라 API를 사용할 수 없습니다."), { name: "UnsupportedError" }));
+          return;
+        }
+
+        stopCamera(false);
+        hideMessage();
+        setStatus("getUserMedia() 호출 중", "loading");
+        elements.startButton.disabled = true;
+
+        try {
+          const constraints = createConstraints();
+          log("getUserMedia() 호출", constraints);
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          const track = stream.getVideoTracks()[0];
+
+          if (!stream.active || !track || track.readyState !== "live") {
+            throw Object.assign(new Error("활성 비디오 트랙이 없습니다."), { name: "InactiveStreamError" });
+          }
+
+          log("MediaStream 생성 성공", {
+            id: stream.id,
+            active: stream.active,
+            track: {
+              label: track.label,
+              readyState: track.readyState,
+              enabled: track.enabled,
+              muted: track.muted,
+              settings: track.getSettings?.(),
+            },
+          });
+
+          elements.video.muted = true;
+          elements.video.autoplay = true;
+          elements.video.playsInline = true;
+          elements.video.srcObject = stream;
+          log("video.srcObject 연결", { connected: elements.video.srcObject === stream });
+
+          const metadataPromise = waitForMetadata();
+          const playPromise = elements.video.play();
+          log("video.play() 호출");
+          await Promise.all([metadataPromise, playPromise]);
+          await waitForFirstFrame();
+
+          if (elements.video.videoWidth <= 0 || elements.video.videoHeight <= 0 || elements.video.paused) {
+            throw Object.assign(new Error("영상 크기가 0이거나 video가 일시 정지 상태입니다."), { name: "VideoNotPlayingError" });
+          }
+
+          log("video.play() 성공", {
+            videoWidth: elements.video.videoWidth,
+            videoHeight: elements.video.videoHeight,
+            readyState: elements.video.readyState,
+            currentTime: elements.video.currentTime,
+            paused: elements.video.paused,
+          });
+
+          track.addEventListener("ended", () => {
+            showMessage("카메라 트랙이 종료되었습니다. 장치 연결 상태를 확인해 주세요.");
+            setStatus("카메라 트랙 종료", "error");
+            log("MediaStreamTrack ended 이벤트");
+          });
+          track.addEventListener("mute", () => log("MediaStreamTrack mute 이벤트"));
+          track.addEventListener("unmute", () => log("MediaStreamTrack unmute 이벤트"));
+
+          await refreshCameraList(track.getSettings?.().deviceId);
+          elements.stopButton.disabled = false;
+          elements.startButton.disabled = true;
+          setStatus("원본 카메라 영상 재생 중", "live");
+          startDiagnostics();
+        } catch (error) {
+          handleError(error);
+        }
+      }
+
+      function stopCamera(updateStatus = true) {
+        if (diagnosticsTimer !== null) {
+          window.clearInterval(diagnosticsTimer);
+          diagnosticsTimer = null;
+        }
+        if (stream) {
+          stream.getTracks().forEach((track) => track.stop());
+          stream = null;
+        }
+        elements.video.srcObject = null;
+        elements.startButton.disabled = false;
+        elements.stopButton.disabled = true;
+        lastCurrentTime = -1;
+        unchangedTimeTicks = 0;
+        updateDiagnostics();
+        if (updateStatus) {
+          hideMessage();
+          setStatus("카메라 대기 중", "idle");
+          log("카메라 종료");
+        }
+      }
+
+      function waitForMetadata(timeoutMs = 10000) {
+        if (elements.video.readyState >= HTMLMediaElement.HAVE_METADATA) return Promise.resolve();
+        return new Promise((resolve, reject) => {
+          const timeoutId = window.setTimeout(() => {
+            cleanup();
+            reject(Object.assign(new Error("loadedmetadata 이벤트 시간 초과"), { name: "MetadataTimeoutError" }));
+          }, timeoutMs);
+          const onLoaded = () => { cleanup(); resolve(); };
+          const onError = () => { cleanup(); reject(Object.assign(new Error("video 요소 오류"), { name: "VideoElementError" })); };
+          const cleanup = () => {
+            window.clearTimeout(timeoutId);
+            elements.video.removeEventListener("loadedmetadata", onLoaded);
+            elements.video.removeEventListener("error", onError);
+          };
+          elements.video.addEventListener("loadedmetadata", onLoaded);
+          elements.video.addEventListener("error", onError);
+        });
+      }
+
+      function waitForFirstFrame(timeoutMs = 10000) {
+        return new Promise((resolve, reject) => {
+          const timeoutId = window.setTimeout(() => {
+            reject(Object.assign(new Error("실제 영상 프레임이 도착하지 않았습니다."), { name: "FrameTimeoutError" }));
+          }, timeoutMs);
+          const finish = (metadata = {}) => { window.clearTimeout(timeoutId); resolve(metadata); };
+
+          if (typeof elements.video.requestVideoFrameCallback === "function") {
+            elements.video.requestVideoFrameCallback((_, metadata) => finish(metadata));
+          } else {
+            const check = () => {
+              if (elements.video.videoWidth > 0 && elements.video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !elements.video.paused) {
+                finish();
+              } else {
+                requestAnimationFrame(check);
+              }
+            };
+            requestAnimationFrame(check);
+          }
+        });
+      }
+
+      function startDiagnostics() {
+        updateDiagnostics();
+        diagnosticsTimer = window.setInterval(updateDiagnostics, 250);
+      }
+
+      function updateDiagnostics() {
+        const track = stream?.getVideoTracks()[0] ?? null;
+        const css = getComputedStyle(elements.video);
+        const brightness = analyzeBrightness();
+        const currentTime = elements.video.currentTime || 0;
+
+        if (stream && !elements.video.paused) {
+          unchangedTimeTicks = currentTime === lastCurrentTime ? unchangedTimeTicks + 1 : 0;
+          lastCurrentTime = currentTime;
+        }
+
+        setMetric(elements.deviceName, track?.label || "-", track ? "good" : "");
+        setMetric(elements.streamActive, String(Boolean(stream?.active)), stream?.active ? "good" : "bad");
+        setMetric(elements.sourceConnected, String(Boolean(stream && elements.video.srcObject === stream)), stream && elements.video.srcObject === stream ? "good" : "bad");
+        setMetric(elements.videoSize, `${elements.video.videoWidth} × ${elements.video.videoHeight}`, elements.video.videoWidth > 0 ? "good" : "bad");
+        setMetric(elements.readyState, `${elements.video.readyState} · ${READY_STATE_NAMES[elements.video.readyState] ?? "UNKNOWN"}`, elements.video.readyState >= 2 ? "good" : "warn");
+        setMetric(elements.currentTime, `${currentTime.toFixed(3)} s${unchangedTimeTicks >= 8 ? " · 정지 의심" : ""}`, unchangedTimeTicks >= 8 ? "bad" : "good");
+        setMetric(elements.paused, String(elements.video.paused), elements.video.paused ? "warn" : "good");
+        setMetric(elements.trackState, track?.readyState || "-", track?.readyState === "live" ? "good" : "bad");
+        setMetric(elements.trackFlags, track ? `${track.enabled} / ${track.muted}` : "-", track?.enabled && !track?.muted ? "good" : "warn");
+        setMetric(elements.videoCss, `${css.display} · ${css.visibility} · opacity ${css.opacity} · z ${css.zIndex}`, css.display !== "none" && css.visibility !== "hidden" && Number(css.opacity) > 0 ? "good" : "bad");
+
+        if (brightness.available) {
+          setMetric(elements.brightness, brightness.meanLuma.toFixed(2), brightness.isProbablyBlack ? "bad" : "good");
+          setMetric(elements.litRatio, `${(brightness.litPixelRatio * 100).toFixed(2)}%`, brightness.isProbablyBlack ? "bad" : "good");
+
+          if (brightness.isProbablyBlack) {
+            setStatus("스트림은 재생되지만 검은 프레임이 감지됨", "warning");
+            showMessage("실제 video 픽셀의 평균 밝기가 거의 0입니다. 다른 카메라를 선택하거나 렌즈 덮개, Windows 카메라 앱, Zoom·Teams·가상 카메라를 확인해 주세요.", "warning");
+          } else if (elements.statusLine.dataset.state === "warning") {
+            hideMessage();
+            setStatus("원본 카메라 영상 재생 중", "live");
+          }
+        } else {
+          setMetric(elements.brightness, "검사 불가", "warn");
+          setMetric(elements.litRatio, "검사 불가", "warn");
+        }
+      }
+
+      function analyzeBrightness() {
+        if (elements.video.videoWidth <= 0 || elements.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+          return { available: false };
+        }
+
+        try {
+          const width = 64;
+          const height = Math.max(1, Math.round(width * elements.video.videoHeight / elements.video.videoWidth));
+          elements.canvas.width = width;
+          elements.canvas.height = height;
+          const context = elements.canvas.getContext("2d", { willReadFrequently: true });
+          context.drawImage(elements.video, 0, 0, width, height);
+          const data = context.getImageData(0, 0, width, height).data;
+          let total = 0;
+          let litPixels = 0;
+          const count = data.length / 4;
+          for (let index = 0; index < data.length; index += 4) {
+            const luma = (0.2126 * data[index]) + (0.7152 * data[index + 1]) + (0.0722 * data[index + 2]);
+            total += luma;
+            if (luma >= 16) litPixels += 1;
+          }
+          const meanLuma = total / count;
+          const litPixelRatio = litPixels / count;
+          return {
+            available: true,
+            meanLuma,
+            litPixelRatio,
+            isProbablyBlack: meanLuma < 5 && litPixelRatio < 0.01,
+          };
+        } catch (error) {
+          log("밝기 분석 실패", { name: error.name, message: error.message });
+          return { available: false };
+        }
+      }
+
+      function setMetric(element, value, state = "") {
+        element.textContent = value;
+        element.className = state;
+        element.title = value;
+      }
+
+      function handleError(error) {
+        const messages = {
+          NotAllowedError: "카메라 권한이 거부되었습니다. 주소창 권한과 Windows 설정 > 개인정보 및 보안 > 카메라의 접근 권한을 허용해 주세요.",
+          SecurityError: "보안 정책 때문에 카메라를 사용할 수 없습니다. localhost 또는 HTTPS로 실행해 주세요.",
+          NotFoundError: "사용 가능한 카메라를 찾지 못했습니다.",
+          NotReadableError: "다른 프로그램이 카메라를 사용 중이거나 Windows가 장치 접근을 차단했습니다.",
+          OverconstrainedError: "선택한 카메라 또는 요청한 해상도를 사용할 수 없습니다.",
+          AbortError: "카메라 연결이 중단되었습니다.",
+          InactiveStreamError: "카메라 스트림에 활성 비디오 트랙이 없습니다.",
+          MetadataTimeoutError: "카메라 메타데이터를 10초 안에 받지 못했습니다.",
+          FrameTimeoutError: "카메라 스트림은 연결됐지만 실제 영상 프레임이 도착하지 않았습니다.",
+          VideoElementError: "브라우저 video 요소에서 재생 오류가 발생했습니다.",
+          VideoNotPlayingError: "영상 크기가 0이거나 재생이 시작되지 않았습니다.",
+          UnsupportedError: "이 브라우저 또는 현재 주소에서는 카메라 API를 사용할 수 없습니다.",
+        };
+        const reason = messages[error.name] || error.message || "알 수 없는 카메라 오류입니다.";
+        const constraint = error.constraint ? ` 제한 조건: ${error.constraint}.` : "";
+        const fullMessage = `${error.name || "Error"}: ${reason}${constraint}`;
+
+        log("카메라 실행 실패", { name: error.name, message: error.message, constraint: error.constraint });
+        stopCamera(false);
+        setStatus("카메라 실행 실패", "error");
+        showMessage(fullMessage);
+      }
+
+      elements.startButton.addEventListener("click", startCamera);
+      elements.stopButton.addEventListener("click", () => stopCamera(true));
+      elements.cameraSelect.addEventListener("change", () => {
+        if (stream) startCamera();
+      });
+      elements.video.addEventListener("loadedmetadata", () => log("loadedmetadata 이벤트", { width: elements.video.videoWidth, height: elements.video.videoHeight }));
+      elements.video.addEventListener("playing", () => log("playing 이벤트"));
+      elements.video.addEventListener("waiting", () => log("waiting 이벤트"));
+      elements.video.addEventListener("stalled", () => log("stalled 이벤트"));
+      elements.video.addEventListener("error", () => log("video error 이벤트", elements.video.error));
+      window.addEventListener("beforeunload", () => stopCamera(false));
+
+      if (!window.isSecureContext) {
+        showMessage("현재 페이지가 보안 컨텍스트가 아닙니다. Live Server의 localhost 주소로 실행해 주세요.", "warning");
+        setStatus("보안 컨텍스트 필요", "warning");
+      }
+      refreshCameraList();
+      updateDiagnostics();
+      log("테스트 페이지 준비 완료", { isSecureContext: window.isSecureContext, url: window.location.href });
+    </script>
+  </body>
+</html>
