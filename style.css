@@ -588,6 +588,47 @@ select {
 .corner-bl { bottom: 14px; left: 14px; border-bottom: 1px solid; border-left: 1px solid; }
 .corner-br { right: 14px; bottom: 14px; border-right: 1px solid; border-bottom: 1px solid; }
 
+.interpretation-panel {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 16px;
+  align-items: center;
+  min-height: 76px;
+  padding: 14px 18px;
+  border-top: 1px solid rgba(183, 255, 60, 0.14);
+  background: rgba(8, 13, 12, 0.96);
+}
+
+.interpretation-panel > span {
+  grid-row: 1 / 3;
+  color: #7f8a86;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.interpretation-panel strong {
+  color: #e9f0ed;
+  font-size: clamp(1rem, 2.6vw, 1.35rem);
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.interpretation-panel small {
+  color: #7f8a86;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.interpretation-panel[data-state="recognized"] {
+  border-top-color: rgba(183, 255, 60, 0.45);
+  background: rgba(183, 255, 60, 0.08);
+}
+
+.interpretation-panel[data-state="recognized"] strong {
+  color: var(--accent);
+}
+
 .error-message {
   gap: 9px;
   align-items: flex-start;

@@ -8,7 +8,7 @@
       content="MediaPipe를 활용한 한국수어 상반신 관절 실시간 추적 프로그램"
     />
     <title>수어 모션 트래커</title>
-    <link rel="stylesheet" href="./style.css?v=20261116-1" />
+    <link rel="stylesheet" href="./style.css?v=20261116-4" />
   </head>
   <body>
     <main class="app-shell">
@@ -129,6 +129,12 @@
             <div class="frame-corner corner-br" aria-hidden="true"></div>
           </div>
 
+          <div class="interpretation-panel" id="interpretationPanel" data-state="idle" aria-live="polite">
+            <span>실시간 해석</span>
+            <strong id="interpretationText">카메라 꺼짐</strong>
+            <small id="interpretationDetail">인식된 수어의 뜻이 여기에 표시됩니다.</small>
+          </div>
+
           <div class="error-message" id="errorMessage" role="alert" hidden>
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M12 3 2.5 20h19L12 3Zm1 13h-2v-2h2v2Zm0-4h-2V8h2v4Z" />
@@ -171,9 +177,9 @@
 
     <footer>
       <span>한국수어 인식 프로젝트</span>
-      <span>MediaPipe · On-device processing · build 20261116-2</span>
+      <span>MediaPipe · On-device processing · build 20261116-4</span>
     </footer>
 
-    <script type="module" src="./script.js?v=20261116-2"></script>
+    <script type="module" src="./script.js?v=20261116-4"></script>
   </body>
 </html>

@@ -25,9 +25,13 @@ const MIN_INFERENCE_INTERVAL_MS = 1000 / 15;
 const VIDEO_HEALTH_CHECK_INTERVAL_MS = 1500;
 const BLACK_FRAME_LUMA_THRESHOLD = 5;
 const BLACK_FRAME_LIT_PIXEL_RATIO = 0.01;
-const APP_BUILD = "20261116-2";
+const APP_BUILD = "20261116-4";
 const LOG_PREFIX = "[KSL Tracker]";
 const VIRTUAL_CAMERA_PATTERN = /virtual|eshare|obs|manycam|snap camera|droidcam|iriun/i;
+const HELLO_BRUSH_WINDOW_MS = 1300;
+const HELLO_STAGE_TIMEOUT_MS = 3000;
+const HELLO_FIST_WINDOW_MS = 1300;
+const HELLO_RESULT_HOLD_MS = 5000;
 
 const elements = {
   video: document.querySelector("#webcam"),
@@ -55,6 +59,9 @@ const elements = {
   modelStatusCard: document.querySelector("#modelStatusCard"),
   modelStatusValue: document.querySelector("#modelStatusValue"),
   modelStatusDetail: document.querySelector("#modelStatusDetail"),
+  interpretationPanel: document.querySelector("#interpretationPanel"),
+  interpretationText: document.querySelector("#interpretationText"),
+  interpretationDetail: document.querySelector("#interpretationDetail"),
 };
 
 const context = elements.canvas.getContext("2d");
@@ -84,6 +91,14 @@ let lastPoseCount = 0;
 let lastHandCount = 0;
 let frameCounter = 0;
 let fpsStartedAt = performance.now();
+const helloGestureState = {
+  stage: "idle",
+  stageStartedAt: 0,
+  brushSamples: new Map(),
+  fistSamples: [],
+  resultUntil: 0,
+  renderedKey: "",
+};
 
 /**
  * MediaPipe 모델을 초기화합니다.
@@ -205,6 +220,8 @@ async function startCamera() {
   }
 
   hideError();
+  resetHelloGesture();
+  setInterpretation("수어 인식 중", "사용자의 수어가 인식되면 해석을 표시합니다.", "idle");
   elements.startButton.disabled = true;
   elements.cameraSelect.disabled = true;
   cameraState = "connecting";
@@ -423,6 +440,8 @@ function stopCamera() {
   resetDetectionStats();
   elements.fpsValue.textContent = "0";
   clearCanvas();
+  resetHelloGesture();
+  setInterpretation("카메라 꺼짐", "인식된 수어의 뜻이 여기에 표시됩니다.", "idle");
   updateAppStatus();
 }
 
@@ -453,6 +472,7 @@ function predictFrame() {
 
       drawTrackingResults(poseResult, handResult);
       updateStats(poseCount, handCount, timestamp);
+      recognizeHello(poseResult, handResult, timestamp);
       publishTrackingFrame(poseResult, handResult, timestamp);
       lastVideoTime = elements.video.currentTime;
     } catch (error) {
@@ -599,6 +619,184 @@ function resetDetectionStats() {
   lastHandCount = 0;
   elements.poseCount.textContent = "0";
   elements.handCount.textContent = "0";
+}
+
+function recognizeHello(poseResult, handResult, timestamp) {
+  if (helloGestureState.resultUntil > timestamp) return;
+
+  if (helloGestureState.resultUntil && timestamp >= helloGestureState.resultUntil) {
+    resetHelloGesture();
+    setInterpretation("수어 인식 중", "사용자의 수어가 인식되면 해석을 표시합니다.", "idle");
+  }
+
+  const pose = poseResult.landmarks?.[0];
+  const hands = (handResult.landmarks ?? []).map((landmarks, index) =>
+    getHandFeatures(landmarks, index),
+  );
+
+  if (!pose) {
+    expireHelloStage(timestamp);
+    return;
+  }
+
+  if (helloGestureState.stage === "idle") {
+    trackForearmBrush(pose, hands, timestamp);
+    return;
+  }
+
+  if (timestamp - helloGestureState.stageStartedAt > HELLO_STAGE_TIMEOUT_MS) {
+    resetHelloGesture();
+    return;
+  }
+
+  trackTwoFistsDown(pose, hands, timestamp);
+}
+
+function getHandFeatures(landmarks, index) {
+  const palmIndices = [0, 5, 9, 13, 17];
+  const center = averagePoints(palmIndices.map((index) => landmarks[index]));
+  const palmSize = Math.max(distance2d(landmarks[0], landmarks[9]), 0.025);
+  const fingertipReach = [8, 12, 16, 20]
+    .map((index) => distance2d(landmarks[0], landmarks[index]))
+    .reduce((sum, value) => sum + value, 0) / 4;
+
+  return {
+    center,
+    id: index,
+    isFist: fingertipReach / palmSize < 1.75,
+  };
+}
+
+function trackForearmBrush(pose, hands, timestamp) {
+  const forearms = [
+    { side: "Left", start: pose[13], end: pose[15] },
+    { side: "Right", start: pose[14], end: pose[16] },
+  ].filter(({ start, end }) => isVisible(start) && isVisible(end));
+
+  for (const hand of hands) {
+    for (const forearm of forearms) {
+      const segment = projectPointToSegment(hand.center, forearm.start, forearm.end);
+      const armLength = distance2d(forearm.start, forearm.end);
+      const nearArm = segment.distance < Math.max(0.065, armLength * 0.5);
+      if (!nearArm || segment.t < -0.15 || segment.t > 1.15) continue;
+
+      const key = `${hand.id}:${forearm.side}`;
+      const samples = helloGestureState.brushSamples.get(key) ?? [];
+      samples.push({ timestamp, point: hand.center, along: segment.t });
+      const recent = samples.filter((sample) => timestamp - sample.timestamp <= HELLO_BRUSH_WINDOW_MS);
+      helloGestureState.brushSamples.set(key, recent);
+
+      if (recent.length < 3) continue;
+      const first = recent[0];
+      const duration = timestamp - first.timestamp;
+      const alongValues = recent.map((sample) => sample.along);
+      const alongRange = Math.max(...alongValues) - Math.min(...alongValues);
+      const movement = distance2d(first.point, hand.center);
+
+      if (duration >= 180 && (alongRange >= 0.28 || movement >= 0.055)) {
+        helloGestureState.stage = "brushed";
+        helloGestureState.stageStartedAt = timestamp;
+        helloGestureState.brushSamples.clear();
+        helloGestureState.fistSamples = [];
+        return;
+      }
+    }
+  }
+
+  for (const [key, samples] of helloGestureState.brushSamples) {
+    const recent = samples.filter((sample) => timestamp - sample.timestamp <= HELLO_BRUSH_WINDOW_MS);
+    if (recent.length) helloGestureState.brushSamples.set(key, recent);
+    else helloGestureState.brushSamples.delete(key);
+  }
+}
+
+function trackTwoFistsDown(pose, hands, timestamp) {
+  const fists = hands.filter((hand) => hand.isFist && isHandNearTorso(hand.center, pose));
+  if (fists.length < 2) return;
+
+  const pair = fists.slice(0, 2).sort((a, b) => a.center.x - b.center.x);
+  helloGestureState.fistSamples.push({
+    timestamp,
+    left: pair[0].center,
+    right: pair[1].center,
+  });
+  helloGestureState.fistSamples = helloGestureState.fistSamples.filter(
+    (sample) => timestamp - sample.timestamp <= HELLO_FIST_WINDOW_MS,
+  );
+
+  const first = helloGestureState.fistSamples[0];
+  if (!first || timestamp - first.timestamp < 180) return;
+
+  const leftDown = pair[0].center.y - first.left.y;
+  const rightDown = pair[1].center.y - first.right.y;
+  const movedTogether = Math.abs(leftDown - rightDown) < 0.075;
+
+  if (leftDown >= 0.04 && rightDown >= 0.04 && movedTogether) {
+    helloGestureState.resultUntil = timestamp + HELLO_RESULT_HOLD_MS;
+    helloGestureState.stage = "recognized";
+    helloGestureState.fistSamples = [];
+    setInterpretation("안녕하세요", "해석 결과", "recognized");
+  }
+}
+
+function isHandNearTorso(point, pose) {
+  const shoulders = [pose[11], pose[12]].filter(isVisible);
+  const hips = [pose[23], pose[24]].filter(isVisible);
+  if (shoulders.length < 2 || hips.length < 2) return false;
+
+  const shoulderY = (shoulders[0].y + shoulders[1].y) / 2;
+  const hipY = (hips[0].y + hips[1].y) / 2;
+  const minX = Math.min(shoulders[0].x, shoulders[1].x) - 0.28;
+  const maxX = Math.max(shoulders[0].x, shoulders[1].x) + 0.28;
+  return point.x >= minX && point.x <= maxX && point.y >= shoulderY - 0.18 && point.y <= hipY + 0.18;
+}
+
+function expireHelloStage(timestamp) {
+  if (
+    helloGestureState.stage === "brushed" &&
+    timestamp - helloGestureState.stageStartedAt > HELLO_STAGE_TIMEOUT_MS
+  ) {
+    resetHelloGesture();
+  }
+}
+
+function resetHelloGesture() {
+  helloGestureState.stage = "idle";
+  helloGestureState.stageStartedAt = 0;
+  helloGestureState.brushSamples.clear();
+  helloGestureState.fistSamples = [];
+  helloGestureState.resultUntil = 0;
+}
+
+function setInterpretation(text, detail, state) {
+  const key = `${state}|${text}|${detail}`;
+  if (helloGestureState.renderedKey === key) return;
+  helloGestureState.renderedKey = key;
+  elements.interpretationPanel.dataset.state = state;
+  elements.interpretationText.textContent = text;
+  elements.interpretationDetail.textContent = detail;
+}
+
+function averagePoints(points) {
+  const total = points.reduce(
+    (sum, point) => ({ x: sum.x + point.x, y: sum.y + point.y }),
+    { x: 0, y: 0 },
+  );
+  return { x: total.x / points.length, y: total.y / points.length };
+}
+
+function distance2d(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function projectPointToSegment(point, start, end) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy || 1;
+  const t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
+  const clampedT = Math.max(0, Math.min(1, t));
+  const projected = { x: start.x + dx * clampedT, y: start.y + dy * clampedT };
+  return { distance: distance2d(point, projected), t };
 }
 
 /**
@@ -1064,6 +1262,8 @@ function handleCameraError(error) {
   elements.cameraStage.classList.remove("is-live");
   resetDetectionStats();
   clearCanvas();
+  resetHelloGesture();
+  setInterpretation("카메라 꺼짐", "인식된 수어의 뜻이 여기에 표시됩니다.", "idle");
   updateAppStatus();
   showError(message);
 }
