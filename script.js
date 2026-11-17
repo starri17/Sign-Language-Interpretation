@@ -21,17 +21,23 @@ const POSE_UPPER_BODY_CONNECTIONS = [
 ];
 const POSE_UPPER_BODY_LANDMARKS = new Set([0, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24]);
 const MIN_POSE_VISIBILITY = 0.25;
-const MIN_INFERENCE_INTERVAL_MS = 1000 / 15;
+const MIN_INFERENCE_INTERVAL_MS = 1000 / 24;
 const VIDEO_HEALTH_CHECK_INTERVAL_MS = 1500;
 const BLACK_FRAME_LUMA_THRESHOLD = 5;
 const BLACK_FRAME_LIT_PIXEL_RATIO = 0.01;
-const APP_BUILD = "20261116-4";
+const APP_BUILD = "20261117-3";
 const LOG_PREFIX = "[KSL Tracker]";
 const VIRTUAL_CAMERA_PATTERN = /virtual|eshare|obs|manycam|snap camera|droidcam|iriun/i;
 const HELLO_BRUSH_WINDOW_MS = 1300;
 const HELLO_STAGE_TIMEOUT_MS = 3000;
 const HELLO_FIST_WINDOW_MS = 1300;
-const HELLO_RESULT_HOLD_MS = 5000;
+const HELLO_RESULT_HOLD_MS = 1800;
+const NUMBER_STABLE_MS = 300;
+const NUMBER_FIVE_STABLE_MS = 480;
+const NUMBER_TEN_STABLE_MS = 160;
+const NUMBER_RESULT_HOLD_MS = 900;
+const NUMBER_HAND_LOSS_GRACE_MS = 160;
+const TEN_MOTION_WINDOW_MS = 550;
 
 const elements = {
   video: document.querySelector("#webcam"),
@@ -98,6 +104,15 @@ const helloGestureState = {
   fistSamples: [],
   resultUntil: 0,
   renderedKey: "",
+};
+const numberGestureState = {
+  candidate: null,
+  candidateSince: 0,
+  lastSeenAt: 0,
+  lastRecognized: null,
+  resultUntil: 0,
+  tenMotionSamples: [],
+  tenLatched: false,
 };
 
 /**
@@ -221,7 +236,8 @@ async function startCamera() {
 
   hideError();
   resetHelloGesture();
-  setInterpretation("수어 인식 중", "사용자의 수어가 인식되면 해석을 표시합니다.", "idle");
+  resetNumberGesture();
+  setInterpretation("수어 인식 중", "지숫자 1~10 또는 안녕하세요 동작을 보여 주세요.", "idle");
   elements.startButton.disabled = true;
   elements.cameraSelect.disabled = true;
   cameraState = "connecting";
@@ -441,6 +457,7 @@ function stopCamera() {
   elements.fpsValue.textContent = "0";
   clearCanvas();
   resetHelloGesture();
+  resetNumberGesture();
   setInterpretation("카메라 꺼짐", "인식된 수어의 뜻이 여기에 표시됩니다.", "idle");
   updateAppStatus();
 }
@@ -472,7 +489,7 @@ function predictFrame() {
 
       drawTrackingResults(poseResult, handResult);
       updateStats(poseCount, handCount, timestamp);
-      recognizeHello(poseResult, handResult, timestamp);
+      recognizeGestures(poseResult, handResult, timestamp);
       publishTrackingFrame(poseResult, handResult, timestamp);
       lastVideoTime = elements.video.currentTime;
     } catch (error) {
@@ -621,12 +638,26 @@ function resetDetectionStats() {
   elements.handCount.textContent = "0";
 }
 
+function recognizeGestures(poseResult, handResult, timestamp) {
+  recognizeHello(poseResult, handResult, timestamp);
+
+  if (
+    helloGestureState.resultUntil > timestamp ||
+    helloGestureState.stage !== "idle"
+  ) {
+    resetNumberCandidate();
+    return;
+  }
+
+  recognizeHandNumber(handResult, timestamp);
+}
+
 function recognizeHello(poseResult, handResult, timestamp) {
   if (helloGestureState.resultUntil > timestamp) return;
 
   if (helloGestureState.resultUntil && timestamp >= helloGestureState.resultUntil) {
     resetHelloGesture();
-    setInterpretation("수어 인식 중", "사용자의 수어가 인식되면 해석을 표시합니다.", "idle");
+    setInterpretation("수어 인식 중", "지숫자 1~10 또는 안녕하세요 동작을 보여 주세요.", "idle");
   }
 
   const pose = poseResult.landmarks?.[0];
@@ -665,6 +696,232 @@ function getHandFeatures(landmarks, index) {
     id: index,
     isFist: fingertipReach / palmSize < 1.75,
   };
+}
+
+function recognizeHandNumber(handResult, timestamp) {
+  const hands = handResult.landmarks ?? [];
+  if (hands.length < 1 || hands.length > 2) {
+    handleNumberDetectionGap(timestamp);
+    return;
+  }
+
+  let number = null;
+  if (hands.length === 2) {
+    number = isCrossedIndexTen(hands) ? 10 : null;
+    numberGestureState.tenMotionSamples = [];
+  } else {
+    const staticNumber = classifyKslNumber(hands[0]);
+    if (
+      staticNumber === 5 &&
+      (numberGestureState.tenLatched || trackTenMotion(hands[0], timestamp))
+    ) {
+      numberGestureState.tenLatched = true;
+      number = 10;
+    } else {
+      number = staticNumber;
+      if (staticNumber !== 5) {
+        numberGestureState.tenMotionSamples = [];
+        numberGestureState.tenLatched = false;
+      }
+    }
+  }
+
+  if (number === null) {
+    handleNumberDetectionGap(timestamp);
+    return;
+  }
+
+  numberGestureState.lastSeenAt = timestamp;
+
+  if (numberGestureState.candidate !== number) {
+    numberGestureState.candidate = number;
+    numberGestureState.candidateSince = timestamp;
+    return;
+  }
+
+  const stableMs = number === 10
+    ? NUMBER_TEN_STABLE_MS
+    : number === 5
+      ? NUMBER_FIVE_STABLE_MS
+      : NUMBER_STABLE_MS;
+  if (timestamp - numberGestureState.candidateSince < stableMs) return;
+
+  numberGestureState.resultUntil = timestamp + NUMBER_RESULT_HOLD_MS;
+  if (numberGestureState.lastRecognized === number) return;
+
+  numberGestureState.lastRecognized = number;
+  setInterpretation(`숫자 ${number}`, "한국수어 지숫자 인식 결과", "recognized");
+}
+
+function handleNumberDetectionGap(timestamp) {
+  if (timestamp - numberGestureState.lastSeenAt <= NUMBER_HAND_LOSS_GRACE_MS) return;
+
+  resetNumberCandidate();
+  if (
+    numberGestureState.resultUntil &&
+    timestamp >= numberGestureState.resultUntil
+  ) {
+    numberGestureState.resultUntil = 0;
+    setInterpretation("수어 인식 중", "지숫자 1~10 또는 안녕하세요 동작을 보여 주세요.", "idle");
+  }
+}
+
+function classifyKslNumber(landmarks) {
+  if (!landmarks || landmarks.length < 21) return null;
+
+  const extendedFingers = [
+    isFingerExtended(landmarks, [5, 6, 7, 8]),
+    isFingerExtended(landmarks, [9, 10, 11, 12]),
+    isFingerExtended(landmarks, [13, 14, 15, 16]),
+    isFingerExtended(landmarks, [17, 18, 19, 20]),
+  ];
+  const thumbExtended = isThumbExtended(landmarks);
+  const patterns = [
+    { number: 1, fingers: [true, false, false, false], thumb: false },
+    { number: 2, fingers: [true, true, false, false], thumb: false },
+    { number: 3, fingers: [true, true, true, false], thumb: false },
+    { number: 4, fingers: [true, true, true, true], thumb: false },
+    { number: 5, fingers: [false, false, false, false], thumb: true },
+    { number: 6, fingers: [true, false, false, false], thumb: true },
+    { number: 7, fingers: [true, true, false, false], thumb: true },
+    { number: 8, fingers: [true, true, true, false], thumb: true },
+    { number: 9, fingers: [true, true, true, true], thumb: true },
+  ];
+
+  const match = patterns.find(
+    (pattern) =>
+      pattern.thumb === thumbExtended &&
+      pattern.fingers.every((isExtended, index) => isExtended === extendedFingers[index]),
+  );
+  return match?.number ?? null;
+}
+
+function trackTenMotion(landmarks, timestamp) {
+  const center = averagePoints3d([
+    landmarks[0],
+    landmarks[5],
+    landmarks[9],
+    landmarks[13],
+    landmarks[17],
+  ]);
+  const thumbVector = {
+    x: landmarks[4].x - landmarks[2].x,
+    y: landmarks[4].y - landmarks[2].y,
+    z: (landmarks[4].z ?? 0) - (landmarks[2].z ?? 0),
+  };
+  const palmSize = Math.max(distance3d(landmarks[0], landmarks[9]), 0.025);
+
+  numberGestureState.tenMotionSamples.push({ timestamp, center, thumbVector, palmSize });
+  numberGestureState.tenMotionSamples = numberGestureState.tenMotionSamples.filter(
+    (sample) => timestamp - sample.timestamp <= TEN_MOTION_WINDOW_MS,
+  );
+
+  const samples = numberGestureState.tenMotionSamples;
+  const first = samples[0];
+  if (!first || timestamp - first.timestamp < 160 || samples.length < 4) return false;
+
+  const ranges = ["x", "y", "z"].map((axis) => {
+    const values = samples.map((sample) => sample.center[axis]);
+    return Math.max(...values) - Math.min(...values);
+  });
+  const movementRange = Math.max(...ranges);
+  const pathLength = samples.slice(1).reduce(
+    (sum, sample, index) => sum + distance3d(samples[index].center, sample.center),
+    0,
+  );
+  const thumbAngleRange = Math.max(
+    ...samples.map((sample) => angleBetweenVectors3d(first.thumbVector, sample.thumbVector)),
+  );
+  const averagePalmSize = samples.reduce((sum, sample) => sum + sample.palmSize, 0) /
+    samples.length;
+
+  const translated =
+    movementRange >= averagePalmSize * 0.28 &&
+    pathLength >= averagePalmSize * 0.5;
+  const rotated = thumbAngleRange >= 24;
+  return translated || rotated;
+}
+
+function isCrossedIndexTen(hands) {
+  if (hands.length !== 2 || hands.some((landmarks) => classifyKslNumber(landmarks) !== 1)) {
+    return false;
+  }
+
+  const [first, second] = hands;
+  const firstStart = first[5];
+  const firstEnd = first[8];
+  const secondStart = second[5];
+  const secondEnd = second[8];
+  if (segmentsIntersect2d(firstStart, firstEnd, secondStart, secondEnd)) return true;
+
+  const palmSize = (
+    distance2d(first[0], first[9]) + distance2d(second[0], second[9])
+  ) / 2;
+  const nearDistance = Math.min(
+    pointToSegmentDistance(firstStart, secondStart, secondEnd),
+    pointToSegmentDistance(firstEnd, secondStart, secondEnd),
+    pointToSegmentDistance(secondStart, firstStart, firstEnd),
+    pointToSegmentDistance(secondEnd, firstStart, firstEnd),
+  );
+  return nearDistance <= Math.max(0.012, palmSize * 0.16);
+}
+
+function isFingerExtended(landmarks, [mcpIndex, pipIndex, dipIndex, tipIndex]) {
+  const palmSize = Math.max(distance2d(landmarks[0], landmarks[9]), 0.025);
+  const pipAngle = jointAngle2d(
+    landmarks[mcpIndex],
+    landmarks[pipIndex],
+    landmarks[dipIndex],
+  );
+  const dipAngle = jointAngle2d(
+    landmarks[pipIndex],
+    landmarks[dipIndex],
+    landmarks[tipIndex],
+  );
+  const tipReach = distance2d(landmarks[tipIndex], landmarks[0]);
+  const pipReach = distance2d(landmarks[pipIndex], landmarks[0]);
+
+  return (
+    pipAngle >= 150 &&
+    dipAngle >= 145 &&
+    tipReach >= pipReach + palmSize * 0.16
+  );
+}
+
+function isThumbExtended(landmarks) {
+  const palmCenter = averagePoints3d([
+    landmarks[0],
+    landmarks[5],
+    landmarks[9],
+    landmarks[13],
+    landmarks[17],
+  ]);
+  const palmSize = Math.max(distance3d(landmarks[0], landmarks[9]), 0.025);
+  const ipAngle = jointAngle3d(landmarks[2], landmarks[3], landmarks[4]);
+  const tipSpread = distance3d(landmarks[4], palmCenter);
+  const ipSpread = distance3d(landmarks[3], palmCenter);
+  const indexSeparation = distance3d(landmarks[4], landmarks[5]);
+
+  return (
+    ipAngle >= 130 &&
+    tipSpread >= palmSize * 0.72 &&
+    indexSeparation >= palmSize * 0.62 &&
+    tipSpread >= ipSpread + palmSize * 0.07
+  );
+}
+
+function resetNumberCandidate() {
+  numberGestureState.candidate = null;
+  numberGestureState.candidateSince = 0;
+  numberGestureState.lastSeenAt = 0;
+  numberGestureState.lastRecognized = null;
+  numberGestureState.tenMotionSamples = [];
+  numberGestureState.tenLatched = false;
+}
+
+function resetNumberGesture() {
+  resetNumberCandidate();
+  numberGestureState.resultUntil = 0;
 }
 
 function trackForearmBrush(pose, hands, timestamp) {
@@ -785,8 +1042,103 @@ function averagePoints(points) {
   return { x: total.x / points.length, y: total.y / points.length };
 }
 
+function averagePoints3d(points) {
+  const total = points.reduce(
+    (sum, point) => ({
+      x: sum.x + point.x,
+      y: sum.y + point.y,
+      z: sum.z + (point.z ?? 0),
+    }),
+    { x: 0, y: 0, z: 0 },
+  );
+  return {
+    x: total.x / points.length,
+    y: total.y / points.length,
+    z: total.z / points.length,
+  };
+}
+
 function distance2d(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function distance3d(a, b) {
+  return Math.hypot(
+    a.x - b.x,
+    a.y - b.y,
+    (a.z ?? 0) - (b.z ?? 0),
+  );
+}
+
+function jointAngle2d(a, vertex, c) {
+  const firstX = a.x - vertex.x;
+  const firstY = a.y - vertex.y;
+  const secondX = c.x - vertex.x;
+  const secondY = c.y - vertex.y;
+  const magnitude = Math.hypot(firstX, firstY) * Math.hypot(secondX, secondY);
+  if (!magnitude) return 0;
+
+  const cosine = Math.max(
+    -1,
+    Math.min(1, (firstX * secondX + firstY * secondY) / magnitude),
+  );
+  return (Math.acos(cosine) * 180) / Math.PI;
+}
+
+function jointAngle3d(a, vertex, c) {
+  const first = {
+    x: a.x - vertex.x,
+    y: a.y - vertex.y,
+    z: (a.z ?? 0) - (vertex.z ?? 0),
+  };
+  const second = {
+    x: c.x - vertex.x,
+    y: c.y - vertex.y,
+    z: (c.z ?? 0) - (vertex.z ?? 0),
+  };
+  const magnitude =
+    Math.hypot(first.x, first.y, first.z) *
+    Math.hypot(second.x, second.y, second.z);
+  if (!magnitude) return 0;
+
+  const cosine = Math.max(
+    -1,
+    Math.min(
+      1,
+      (first.x * second.x + first.y * second.y + first.z * second.z) / magnitude,
+    ),
+  );
+  return (Math.acos(cosine) * 180) / Math.PI;
+}
+
+function angleBetweenVectors3d(first, second) {
+  const magnitude =
+    Math.hypot(first.x, first.y, first.z) *
+    Math.hypot(second.x, second.y, second.z);
+  if (!magnitude) return 0;
+
+  const cosine = Math.max(
+    -1,
+    Math.min(
+      1,
+      (first.x * second.x + first.y * second.y + first.z * second.z) / magnitude,
+    ),
+  );
+  return (Math.acos(cosine) * 180) / Math.PI;
+}
+
+function segmentsIntersect2d(firstStart, firstEnd, secondStart, secondEnd) {
+  const cross = (a, b, c) =>
+    (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  const firstSideA = cross(firstStart, firstEnd, secondStart);
+  const firstSideB = cross(firstStart, firstEnd, secondEnd);
+  const secondSideA = cross(secondStart, secondEnd, firstStart);
+  const secondSideB = cross(secondStart, secondEnd, firstEnd);
+  return firstSideA * firstSideB <= 0 && secondSideA * secondSideB <= 0;
+}
+
+function pointToSegmentDistance(point, start, end) {
+  return projectPointToSegment(point, start, end).distance;
 }
 
 function projectPointToSegment(point, start, end) {
@@ -1263,6 +1615,7 @@ function handleCameraError(error) {
   resetDetectionStats();
   clearCanvas();
   resetHelloGesture();
+  resetNumberGesture();
   setInterpretation("카메라 꺼짐", "인식된 수어의 뜻이 여기에 표시됩니다.", "idle");
   updateAppStatus();
   showError(message);
